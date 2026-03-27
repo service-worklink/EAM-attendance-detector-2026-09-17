@@ -96,15 +96,21 @@
 
             if (!configRes.ok || !weightsRes.ok) throw new Error("找不到模型檔案，請確認檔案已上傳至 GitHub。");
 
-            const config = await configRes.json();
-            const weightsData = await weightsRes.json();
+// --- 修改後的權重載入邏輯 ---
+const config = await configRes.json();
+const weightsData = await weightsRes.json();
 
-            // 重建結構
-            globalModel = await tf.models.modelFromJSON(config);
+// 1. 重建結構
+globalModel = await tf.models.modelFromJSON(config);
 
-            // 【重要】根據 shape 維度還原權重 Tensor
-            const weightTensors = weightsData.map(w => tf.tensor(w.data, w.shape));
-            globalModel.setWeights(weightTensors);
+// 2. 修正：確保 data 是純數字陣列
+const weightTensors = weightsData.map(w => {
+    // 強制將 data 轉換為 Float32Array，這能解決大多數類型不匹配的問題
+    const typedData = new Float32Array(w.data); 
+    return tf.tensor(typedData, w.shape);
+});
+
+globalModel.setWeights(weightTensors);
 
             statusDiv.className = "success";
             statusDiv.innerText = "✅ 模型載入成功！現在可以上傳 CSV 進行鑑定。";

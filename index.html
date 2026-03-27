@@ -17,4 +17,182 @@
         button:disabled { background-color: #ccc; cursor: not-allowed; }
         input[type="file"] { margin: 15px 0; display: block; }
         #status { padding: 15px; border-radius: 6px; margin: 20px 0; display: none; }
-        .success { background-color: #e6f4ea; color: #1e8e3e; display: block !important;
+        .success { background-color: #e6f4ea; color: #1e8e3e; display: block !important; }
+        .error { background-color: #fce8e6; color: #d93025; display: block !important; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
+        th, td { border: 1px solid #eee; padding: 12px; text-align: left; }
+        th { background-color: #f8f9fa; font-weight: 600; }
+        tr:hover { background-color: #fdfdfd; }
+        .anomaly-score { color: #d93025; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>AI 出勤異常偵測系統</h1>
+
+    <div class="card">
+        <h3>1. 準備 AI 模型</h3>
+        <p>點擊下方按鈕載入訓練好的標準規範模型。</p>
+        <button id="loadModelBtn">載入標準模型 (JSON)</button>
+        <div id="modelStatus"></div>
+    </div>
+
+    <div class="card">
+        <h3>2. 上傳待鑑定資料</h3>
+        <p>請選擇要分析的 2025 年出勤紀錄 CSV 檔案。</p>
+        <input type="file" id="csvFile" accept=".csv" disabled>
+        <button id="scanBtn" disabled>開始鑑定異常紀錄</button>
+    </div>
+
+    <div id="status"></div>
+    <div id="resultArea" style="display: none;">
+        <h3>🚨 偵測到的異常清單</h3>
+        <table id="resultTable">
+            <thead>
+                <tr>
+                    <th>員工編號</th>
+                    <th>日期</th>
+                    <th>上班時刻</th>
+                    <th>總工時 (小時)</th>
+                    <th>異常分數 (MSE)</th>
+                </tr>
+            </thead>
+            <tbody id="resultBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    let globalModel = null;
+    const THRESHOLD = 0.005; // 異常門檻值
+
+    // 工具：時間轉分鐘
+    function timeToMinutes(timeStr) {
+        if (!timeStr) return 0;
+        const [h, m] = timeStr.split(':').map(Number);
+        return h * 60 + m;
+    }
+
+    // 工具：分鐘轉時間格式
+    function formatMin(m) {
+        return `${Math.floor(m/60).toString().padStart(2,'0')}:${(m%60).toString().padStart(2,'0')}`;
+    }
+
+    // 1. 載入模型邏輯
+    document.getElementById('loadModelBtn').addEventListener('click', async () => {
+        const btn = document.getElementById('loadModelBtn');
+        const statusDiv = document.getElementById('modelStatus');
+        
+        try {
+            btn.disabled = true;
+            statusDiv.innerText = "⏳ 正在從伺服器抓取模型檔案...";
+
+            // 抓取 Config 與 Weights
+            const [configRes, weightsRes] = await Promise.all([
+                fetch('./model_config.json'),
+                fetch('./model_weights.json')
+            ]);
+
+            if (!configRes.ok || !weightsRes.ok) throw new Error("找不到模型檔案，請確認檔案已上傳至 GitHub。");
+
+            const config = await configRes.json();
+            const weightsData = await weightsRes.json();
+
+            // 重建結構
+            globalModel = await tf.models.modelFromJSON(config);
+
+            // 【重要】根據 shape 維度還原權重 Tensor
+            const weightTensors = weightsData.map(w => tf.tensor(w.data, w.shape));
+            globalModel.setWeights(weightTensors);
+
+            statusDiv.className = "success";
+            statusDiv.innerText = "✅ 模型載入成功！現在可以上傳 CSV 進行鑑定。";
+            document.getElementById('csvFile').disabled = false;
+        } catch (err) {
+            console.error(err);
+            statusDiv.className = "error";
+            statusDiv.innerText = "❌ 載入失敗: " + err.message;
+            btn.disabled = false;
+        }
+    });
+
+    // 2. 監聽檔案選擇
+    document.getElementById('csvFile').addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            document.getElementById('scanBtn').disabled = false;
+        }
+    });
+
+    // 3. 鑑定邏輯
+    document.getElementById('scanBtn').addEventListener('click', () => {
+        const file = document.getElementById('csvFile').files[0];
+        const statusDiv = document.getElementById('status');
+        const resultArea = document.getElementById('resultArea');
+        const resultBody = document.getElementById('resultBody');
+
+        statusDiv.className = "success";
+        statusDiv.innerText = "⏳ AI 正在逐筆比對資料中...";
+        resultBody.innerHTML = "";
+        resultArea.style.display = "none";
+
+        const anomalies = [];
+        const temp = {};
+
+        Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            complete: (results) => {
+                results.data.forEach(row => {
+                    const empId = row['員工編號'];
+                    const date = row['上下班日期'];
+                    const time = row['上下班時間'];
+                    const flag = row['上下班標記'];
+
+                    if (!empId || !date || !time) return;
+
+                    const key = `${empId}_${date}`;
+                    if (flag === 'I') {
+                        temp[key] = timeToMinutes(time);
+                    } else if (flag === 'O' && temp[key]) {
+                        const start = temp[key];
+                        const duration = timeToMinutes(time) - start;
+
+                        // 進行 AI 預測
+                        tf.tidy(() => {
+                            const input = tf.tensor2d([[start / 1440, duration / 1440]]);
+                            const pred = globalModel.predict(input);
+                            const mse = tf.losses.meanSquaredError(input, pred).dataSync()[0];
+
+                            if (mse > THRESHOLD) {
+                                anomalies.push({
+                                    id: empId,
+                                    date: date,
+                                    start: formatMin(start),
+                                    duration: (duration / 60).toFixed(2),
+                                    mse: mse.toFixed(6)
+                                });
+                            }
+                        });
+                        delete temp[key];
+                    }
+                });
+
+                // 渲染結果
+                if (anomalies.length > 0) {
+                    statusDiv.innerText = `鑑定完成，共發現 ${anomalies.length} 筆異常紀錄。`;
+                    anomalies.forEach(a => {
+                        const tr = resultBody.insertRow();
+                        tr.innerHTML = `<td>${a.id}</td><td>${a.date}</td><td>${a.start}</td><td>${a.duration}</td><td class="anomaly-score">${a.mse}</td>`;
+                    });
+                    resultArea.style.display = "block";
+                } else {
+                    statusDiv.innerText = "✅ 鑑定完成，所有紀錄均符合 2026 標準規範。";
+                }
+            }
+        });
+    });
+</script>
+
+</body>
+</html>

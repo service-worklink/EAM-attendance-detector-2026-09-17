@@ -78,36 +78,37 @@
 
     // 1. 載入模型邏輯
     document.getElementById('loadModelBtn').addEventListener('click', async () => {
-        const statusDiv = document.getElementById('modelStatus');
-        statusDiv.innerText = '正在載入模型...';
+    const statusDiv = document.getElementById('modelStatus');
+    statusDiv.innerText = '正在載入模型...';
 
-        try {
-            // 使用 fetch 讀取本地 JSON 檔案
-            const [configRes, weightsRes] = await Promise.all([
-                fetch('model_config.json'),
-                fetch('model_weights.json')
-            ]);
+    try {
+        const configRes = await fetch('model_config.json');
+        const weightsRes = await fetch('model_weights.json');
 
-            if (!configRes.ok || !weightsRes.ok) throw new Error('找不到模型檔案，請確保檔案位於伺服器根目錄。');
+        if (!configRes.ok) throw new Error(`找不到 config 檔案 (Status: ${configRes.status})`);
+        if (!weightsRes.ok) throw new Error(`找不到 weights 檔案 (Status: ${weightsRes.status})`);
 
-            const config = await configRes.json();
-            const weightsData = await weightsRes.json();
+        const config = await configRes.json();
+        const weightsData = await weightsRes.json();
 
-            // 從 JSON 配置重建模型結構
-            globalModel = await tf.models.modelFromJSON(config);
-
-            // 將 JSON 格式的權重轉回 Tensor 並注入模型
-            const weightTensors = weightsData.map(w => tf.tensor(w));
-            globalModel.setWeights(weightTensors);
-
-            statusDiv.innerText = '✅ 模型載入成功！';
-            document.getElementById('csvFile').disabled = false;
-            document.getElementById('loadModelBtn').disabled = true;
-        } catch (error) {
-            console.error(error);
-            statusDiv.innerText = `❌ 載入失敗: ${error.message}`;
+        // 🔍 除錯用：檢查抓到的內容格式
+        console.log('Config內容:', config); 
+        if (typeof config !== 'object') {
+            throw new Error('model_config.json 格式錯誤，應該是物件但收到了其他東西。');
         }
-    });
+
+        globalModel = await tf.models.modelFromJSON(config);
+        const weightTensors = weightsData.map(w => tf.tensor(w));
+        globalModel.setWeights(weightTensors);
+
+        statusDiv.innerText = '✅ 模型載入成功！';
+        document.getElementById('csvFile').disabled = false;
+        document.getElementById('loadModelBtn').disabled = true;
+    } catch (error) {
+        console.error('詳細錯誤資訊:', error);
+        statusDiv.innerText = `❌ 載入失敗: ${error.message}`;
+    }
+});
 
     // 2. 當 CSV 檔案選取後啟用鑑別按鈕
     document.getElementById('csvFile').addEventListener('change', () => {

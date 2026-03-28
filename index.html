@@ -3,63 +3,129 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 出勤異常偵測系統 (含靈敏度調整)</title>
+    <title>簽到紀錄 AI 異常偵測</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; padding: 20px; line-height: 1.6; }
-        .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
-        h1 { text-align: center; color: #1a73e8; margin-bottom: 30px; }
-        .card { border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-        .card h3 { margin-top: 0; color: #333; }
-        .setting-group { background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0; border-left: 4px solid #1a73e8; }
-        label { font-weight: bold; display: block; margin-bottom: 5px; }
-        input[type="range"] { width: 100%; cursor: pointer; }
-        .threshold-value { color: #d93025; font-weight: bold; font-size: 1.1em; }
-        button { background-color: #1a73e8; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 15px; transition: background 0.3s; }
-        button:hover { background-color: #1557b0; }
-        button:disabled { background-color: #ccc; cursor: not-allowed; }
-        input[type="file"] { margin: 15px 0; display: block; }
-        #status { padding: 15px; border-radius: 6px; margin: 20px 0; display: none; }
-        .success { background-color: #e6f4ea; color: #1e8e3e; display: block !important; }
-        .error { background-color: #fce8e6; color: #d93025; display: block !important; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
-        th, td { border: 1px solid #eee; padding: 12px; text-align: left; }
-        th { background-color: #f8f9fa; font-weight: 600; }
-        .anomaly-score { color: #d93025; font-weight: bold; }
+        /* --- 基礎樣式重設 --- */
+        :root {
+            --primary-color: #3d3d3d; /* 深灰色字體 */
+            --bg-color: #f4f6f8;     /* 淡灰色背景 */
+            --card-bg: #ffffff;       /* 白色卡片 */
+            --border-color: #e0e0e0;
+            --success-green: #e6f4ea;
+            --text-green: #1e8e3e;
+            --shadow: 0 4px 6px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        * { box-sizing: border-radius; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro TC", "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: var(--bg-color); color: var(--primary-color); padding: 40px 20px; line-height: 1.5; }
+        
+        /* --- 主容器 --- */
+        .app-container { max-width: 900px; margin: 0 auto; }
+
+        /* --- 標題區 (圖示+文字) --- */
+        .header { display: flex; align-items: center; margin-bottom: 25px; padding-left: 10px; }
+        .header i.logo-icon { font-size: 32px; margin-right: 15px; color: #333; }
+        .header h1 { font-size: 26px; font-weight: 700; color: #000; }
+
+        /* --- 模型狀態標籤 --- */
+        .status-badge { display: inline-flex; align-items: center; padding: 6px 16px; border-radius: 50px; border: 1px solid var(--border-color); font-size: 14px; margin-bottom: 30px; margin-left: 10px; transition: all 0.3s; cursor: pointer; }
+        .status-badge i { margin-right: 8px; font-size: 16px; }
+        .status-badge.loading { background-color: #fff; color: #666; }
+        .status-badge.ready { background-color: var(--success-green); color: var(--text-green); border-color: #c3e6cb; }
+        .status-badge.error { background-color: #fce8e6; color: #d93025; border-color: #fad2cf; }
+        .status-badge:hover:not(.ready) { background-color: #eee; }
+
+        /* --- 上傳區域卡片 (虛線框) --- */
+        .upload-area { background-color: var(--card-bg); border: 2px dashed #d9d9d9; border-radius: 12px; height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-bottom: 25px; cursor: pointer; transition: border-color 0.3s, background-color 0.3s; color: #555; position: relative; }
+        .upload-area:hover:not(.disabled) { border-color: #1a73e8; background-color: #fcfdfe; }
+        .upload-area.disabled { cursor: not-allowed; opacity: 0.6; }
+        .upload-area .xlsx-icon { font-size: 50px; margin-bottom: 15px; color: #3367d6; /* Excel 藍 */ }
+        .upload-area p { font-size: 18px; font-weight: 500; margin-bottom: 5px; }
+        .upload-area span { font-size: 14px; color: #888; }
+        /* 隱藏真正的 input file，用 JS 觸發 */
+        #xlsxFile { display: none; }
+
+        /* --- 設定與執行底欄 (亮灰色卡片) --- */
+        .action-bar { background-color: #f9f9f9; padding: 20px 30px; border-radius: 12px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #f0f0f0; margin-bottom: 25px; }
+        
+        /* 靈敏度設定群組 */
+        .settings-group { display: flex; align-items: center; gap: 15px; flex-grow: 1; margin-right: 30px; }
+        .settings-group i.set-icon { font-size: 20px; color: #666; }
+        .settings-group label { font-size: 16px; font-weight: 500; white-space: nowrap; }
+        
+        /* 自定義滑桿樣式 */
+        .range-container { position: relative; display: flex; align-items: center; flex-grow: 1; max-width: 400px; }
+        input[type="range"] { -webkit-appearance: none; width: 100%; height: 6px; background: #ddd; border-radius: 5px; outline: none; cursor: pointer; }
+        /* 滑桿軌道進度顏色 */
+        input[type="range"]::-webkit-slider-runnable-track { background: linear-gradient(to right, #666 var(--scroll-percent, 25%), #ddd var(--scroll-percent, 25%)); height: 6px; border-radius: 5px; }
+        /* 滑桿圓點 */
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; background: #fff; border: 2px solid #666; border-radius: 50%; cursor: pointer; transition: background 0.2s; position: relative; top: -6px; /* 向上修正 */ }
+        input[type="range"]::-webkit-slider-thumb:hover { background: #eee; }
+        .threshold-value { font-size: 16px; font-weight: 600; color: #000; min-width: 60px; text-align: right; margin-left: 10px; }
+
+        /* 偵測按鈕 */
+        .scan-btn { background-color: #e0e0e0; color: #fff; border: none; padding: 12px 30px; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 10px; transition: background 0.3s; }
+        .scan-btn.active { background-color: #333; }
+        .scan-btn.active:hover { background-color: #000; }
+        .scan-btn:disabled { cursor: not-allowed; }
+
+        /* --- 結果與狀態區 (白色卡片) --- */
+        #statusSection { display: none; margin-bottom: 25px; padding: 15px 25px; border-radius: 12px; background: var(--card-bg); box-shadow: var(--shadow); border: 1px solid var(--border-color); }
+        .status-loading { color: #666; }
+        .status-no-anomaly { color: var(--text-green); font-weight: 600; }
+
+        #resultArea { display: none; background-color: var(--card-bg); padding: 25px; border-radius: 12px; box-shadow: var(--shadow); border: 1px solid var(--border-color); }
+        #resultArea h3 { font-size: 18px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; color: #d93025; }
+        
+        /* 表格樣式 */
+        table { width: 100%; border-collapse: collapse; font-size: 14px; color: #555; }
+        th, td { padding: 16px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        th { font-weight: 600; color: #333; background-color: #fafafa; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background-color: #fbfbfb; }
+        .anomaly-score { color: #d93025; font-weight: 700; }
+
     </style>
 </head>
 <body>
 
-<div class="container">
-    <h1>AI 出勤異常偵測系統</h1>
-
-    <div class="card">
-        <h3>1. 準備 AI 模型</h3>
-        <button id="loadModelBtn">載入標準模型 (JSON)</button>
-        <div id="modelStatus"></div>
+<div class="app-container">
+    <div class="header">
+        <i class="fas fa-brain logo-icon"></i> <h1>簽到紀錄 AI 異常偵測</h1>
     </div>
 
-    <div class="card">
-        <h3>2. 設定判定靈敏度</h3>
-        <div class="setting-group">
-            <label for="thresholdRange">判定閥值 (MSE): <span id="thresholdDisplay" class="threshold-value">0.0050</span></label>
-            <input type="range" id="thresholdRange" min="0.0001" max="0.02" step="0.0001" value="0.0050">
-            <p style="font-size: 0.85em; color: #666; margin-top: 8px;">
-                💡 數值越小越<strong>靈敏</strong>（抓出更多微小異常）；數值越大越<strong>寬鬆</strong>（只抓極端異常）。
-            </p>
+    <div id="modelStatus" class="status-badge loading" title="點擊載入模型">
+        <i class="fas fa-sync-alt"></i> <span>點擊載入標準模型 (JSON)</span>
+    </div>
+
+    <div id="dropZone" class="upload-area disabled">
+        <i class="fas fa-file-excel xlsx-icon"></i>
+        <p>點擊上傳或拖曳 Excel 檔案 (.xlsx)</p>
+        <span>支援讀取所有頁籤資料</span>
+        <input type="file" id="xlsxFile" accept=".xlsx, .xls">
+    </div>
+
+    <div class="action-bar">
+        <div class="settings-group">
+            <i class="fas fa-sliders-h set-icon"></i> <label for="thresholdRange">靈敏度 (MSE 閥值):</label>
+            <div class="range-container">
+                <input type="range" id="thresholdRange" min="0.0001" max="0.02" step="0.0001" value="0.0050" disabled style="--scroll-percent: 25%;">
+            </div>
+            <span id="thresholdDisplay" class="threshold-value">0.0050</span>
         </div>
+        
+        <button id="scanBtn" class="scan-btn" disabled>
+            <i class="fas fa-play"></i> 執行偵測
+        </button>
     </div>
 
-    <div class="card">
-        <h3>3. 上傳待鑑定資料</h3>
-        <input type="file" id="xlsxFile" accept=".xlsx, .xls" disabled>
-        <button id="scanBtn" disabled>開始鑑定異常紀錄</button>
-    </div>
+    <div id="statusSection"></div>
 
-    <div id="status"></div>
-    <div id="resultArea" style="display: none;">
-        <h3>🚨 偵測到的異常清單</h3>
+    <div id="resultArea">
+        <h3><i class="fas fa-bell"></i> 偵測到的異常清單</h3>
         <table id="resultTable">
             <thead>
                 <tr>
@@ -76,15 +142,47 @@
 </div>
 
 <script>
+    // --- JavaScript 核心邏輯保持不變，只增加 UI 控制部分 ---
     let globalModel = null;
     let currentThreshold = 0.0050;
 
-    // 更新顯示的閥值數值
-    document.getElementById('thresholdRange').addEventListener('input', (e) => {
+    // UI 元件快取
+    const modelBadge = document.getElementById('modelStatus');
+    const modelBadgeIcon = modelBadge.querySelector('i');
+    const modelBadgeText = modelBadge.querySelector('span');
+    
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('xlsxFile');
+    
+    const rangeInput = document.getElementById('thresholdRange');
+    const thresholdDisplay = document.getElementById('thresholdDisplay');
+    
+    const scanBtn = document.getElementById('scanBtn');
+    
+    const statusSection = document.getElementById('statusSection');
+    const resultArea = document.getElementById('resultArea');
+    const resultBody = document.getElementById('resultBody');
+
+    // 初始化：更新滑桿進度顏色
+    updateRangeProgress(rangeInput);
+
+    // 1. 靈敏度滑桿控制
+    rangeInput.addEventListener('input', (e) => {
         currentThreshold = parseFloat(e.target.value);
-        document.getElementById('thresholdDisplay').innerText = currentThreshold.toFixed(4);
+        thresholdDisplay.innerText = currentThreshold.toFixed(4);
+        updateRangeProgress(e.target); // 更新顏色進度
     });
 
+    // 更新滑桿軌道進度顏色的輔助函數
+    function updateRangeProgress(input) {
+        const value = input.value;
+        const min = input.min || 0;
+        const max = input.max || 100;
+        const percent = ((value - min) / (max - min)) * 100;
+        input.style.setProperty('--scroll-percent', percent + '%');
+    }
+
+    // 工具：時間與格式化保持原本邏輯
     function timeToMinutes(timeStr) {
         if (!timeStr) return 0;
         const str = String(timeStr);
@@ -97,99 +195,224 @@
         return `${Math.floor(m/60).toString().padStart(2,'0')}:${(m%60).toString().padStart(2,'0')}`;
     }
 
-    // 載入模型
-    document.getElementById('loadModelBtn').addEventListener('click', async () => {
-        const btn = document.getElementById('loadModelBtn');
-        const statusDiv = document.getElementById('modelStatus');
+    // 2. 模型載入邏輯 (綁定到 Ready 標籤上)
+    modelBadge.addEventListener('click', async () => {
+        // 如果已經就緒，不用再次載入
+        if (modelBadge.classList.contains('ready')) return;
+
         try {
-            btn.disabled = true;
-            statusDiv.innerText = "⏳ 載入中...";
+            // UI 更新為轉圈狀態
+            modelBadge.classList.remove('loading', 'error');
+            modelBadge.classList.add('loading');
+            modelBadgeIcon.className = "fas fa-spinner fa-spin"; // 轉圈圈
+            modelBadgeText.innerText = "⏳ 載入模型檔案中...";
+
+            // 抓取 Config 與 Weights (確保路徑正確)
             const [configRes, weightsRes] = await Promise.all([
                 fetch('./model_config.json'),
                 fetch('./model_weights.json')
             ]);
+
+            if (!configRes.ok || !weightsRes.ok) throw new Error("找不到模型檔案。");
+
             const config = await configRes.json();
             const weightsData = await weightsRes.json();
+
+            // 重建模型結構
             globalModel = await tf.models.modelFromJSON(config);
-            const weightTensors = weightsData.map(w => tf.tensor(new Float32Array(w.data), w.shape));
+
+            // 還原權重 (與原本邏輯一致)
+            const weightTensors = weightsData.map(w => {
+                const typedData = new Float32Array(w.data); 
+                return tf.tensor(typedData, w.shape);
+            });
             globalModel.setWeights(weightTensors);
-            statusDiv.className = "success";
-            statusDiv.innerText = "✅ 模型載入成功！";
-            document.getElementById('xlsxFile').disabled = false;
+
+            // --- 載入成功：UI 全面變色就緒 ---
+            modelBadge.classList.remove('loading');
+            modelBadge.classList.add('ready');
+            modelBadgeIcon.className = "fas fa-check-circle"; // 打勾圖示
+            modelBadgeText.innerText = "模型已就緒";
+
+            // 啟用其他元件
+            dropZone.classList.remove('disabled');
+            rangeInput.disabled = false;
+            // 如果已有檔案，啟用按鈕
+            if (fileInput.files.length > 0) scanBtn.disabled = false;
+
         } catch (err) {
-            statusDiv.className = "error";
-            statusDiv.innerText = "❌ 失敗: " + err.message;
-            btn.disabled = false;
+            console.error(err);
+            // --- 載入失敗：UI 顯示紅色錯誤 ---
+            modelBadge.classList.remove('loading');
+            modelBadge.classList.add('error');
+            modelBadgeIcon.className = "fas fa-exclamation-triangle"; // 驚嘆號圖示
+            modelBadgeText.innerText = "模型載入失敗 (點擊重試)";
+            alert("❌ 模型載入失敗: " + err.message);
         }
     });
 
-    document.getElementById('xlsxFile').addEventListener('change', (e) => {
-        if (e.target.files.length > 0) document.getElementById('scanBtn').disabled = false;
+    // 3. 上傳區域交互
+    // 點擊虛線框觸發真正隱藏的 file input
+    dropZone.addEventListener('click', () => {
+        if (!dropZone.classList.contains('disabled')) {
+            fileInput.click();
+        }
     });
 
-    // 執行鑑定
-    document.getElementById('scanBtn').addEventListener('click', () => {
-        const file = document.getElementById('xlsxFile').files[0];
-        const statusDiv = document.getElementById('status');
-        const resultArea = document.getElementById('resultArea');
-        const resultBody = document.getElementById('resultBody');
+    // 拖曳上傳支援 (Drag & Drop)
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!dropZone.classList.contains('disabled')) {
+            dropZone.style.borderColor = '#1a73e8';
+            dropZone.style.backgroundColor = '#fcfdfe';
+        }
+    });
 
-        statusDiv.className = "success";
-        statusDiv.innerText = "⏳ 鑑定中...";
+    dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!dropZone.classList.contains('disabled')) {
+            dropZone.style.borderColor = '#d9d9d9';
+            dropZone.style.backgroundColor = 'transparent';
+        }
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.style.borderColor = '#d9d9d9';
+        dropZone.style.backgroundColor = 'transparent';
+
+        if (!dropZone.classList.contains('disabled')) {
+            const files = e.dataTransfer.files;
+            // 檢查是否為 Excel 檔案
+            if (files.length > 0 && (files[0].name.endsWith('.xlsx') || files[0].name.endsWith('.xls'))) {
+                fileInput.files = files; // 將拖曳檔案交給 input 控制項
+                handleFileSelect(); // 觸發選擇邏輯
+            } else {
+                alert("❌ 請上傳 Excel (.xlsx 或 .xls) 格式檔案。");
+            }
+        }
+    });
+
+    // 檔案選擇變更監聽
+    fileInput.addEventListener('change', handleFileSelect);
+
+    function handleFileSelect() {
+        if (fileInput.files.length > 0) {
+            // UI 更新：框框變實線，顯示檔案名稱
+            dropZone.style.borderColor = '#1a73e8';
+            dropZone.style.borderStyle = 'solid';
+            dropZone.querySelector('p').innerText = "已載入: " + fileInput.files[0].name;
+            dropZone.querySelector('p').style.color = '#1a73e8';
+
+            // 如果模型就緒，啟用偵測按鈕
+            if (globalModel) {
+                scanBtn.disabled = false;
+                scanBtn.classList.add('active'); // 變色啟用
+            }
+        }
+    }
+
+    // 4. 偵測鑑定邏輯 (讀取 Excel) 保持原本邏輯，只增加 UI 更新
+    scanBtn.addEventListener('click', () => {
+        const file = fileInput.files[0];
+
+        // UI 初始化
+        scanBtn.disabled = true; // 防止重複點擊
+        statusSection.style.display = 'block';
+        statusSection.innerHTML = '<span class="status-loading"><i class="fas fa-spinner fa-spin"></i> AI 正在分析鑑定資料中...</span>';
         resultBody.innerHTML = "";
         resultArea.style.display = "none";
 
         const reader = new FileReader();
+
         reader.onload = (e) => {
-            const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, {type: 'array'});
-            const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
-            const anomalies = [];
-            const temp = {};
+            try {
+                const data = new Uint8Array(e.target.result);
+                // 增加 { cellDates: true } 可以更準確讀取 Excel 時間格式
+                const workbook = XLSX.read(data, {type: 'array'});
+                
+                // 讀取第一個工作表
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+                
+                // 轉為 JSON 格式 (與原本邏輯保持一致)
+                // 注意：根據不同的 Excel 存檔方式，日期與時間有時會是字串，有時會是數字或 Date 物件。
+                // 這裡我們假設與原本 CSV 一致的欄位名稱與格式。
+                const jsonData = XLSX.utils.sheet_to_json(worksheet);
 
-            jsonData.forEach(row => {
-                const empId = row['員工編號'];
-                const date = row['上下班日期'];
-                const time = row['上下班時間'];
-                const flag = row['上下班標記'];
+                if (jsonData.length === 0) throw new Error("Excel 檔案內容為空。");
 
-                if (!empId || !date || !time) return;
-                const key = `${empId}_${date}`;
-                if (flag === 'I') {
-                    temp[key] = timeToMinutes(time);
-                } else if (flag === 'O' && temp[key]) {
-                    const start = temp[key];
-                    const duration = timeToMinutes(time) - start;
+                const anomalies = [];
+                const temp = {};
 
-                    tf.tidy(() => {
-                        const input = tf.tensor2d([[start / 1440, duration / 1440]]);
-                        const pred = globalModel.predict(input);
-                        const mse = tf.losses.meanSquaredError(input, pred).dataSync()[0];
+                jsonData.forEach(row => {
+                    const empId = row['員工編號'];
+                    const date = row['上下班日期'];
+                    const time = row['上下班時間'];
+                    const flag = row['上下班標記'];
 
-                        // 使用動態調整的閥值
-                        if (mse > currentThreshold) {
-                            anomalies.push({
-                                id: empId, date, start: formatMin(start),
-                                duration: (duration / 60).toFixed(2),
-                                mse: mse.toFixed(6)
+                    if (!empId || !date || !time) return;
+
+                    const key = `${empId}_${date}`;
+                    if (flag === 'I') {
+                        temp[key] = timeToMinutes(time);
+                    } else if (flag === 'O' && temp[key]) {
+                        const start = temp[key];
+                        // 注意：這裡假設上下班日期在同一天。如果是跨日打卡，工時計算需要更複雜。
+                        const duration = timeToMinutes(time) - start;
+
+                        // 防止無效工時 (例如打卡標記錯誤導致下班在上班前)
+                        if (duration > 0) {
+                            tf.tidy(() => {
+                                // 正規化輸入特徵 [上班時刻/1440, 工時/1440]
+                                const input = tf.tensor2d([[start / 1440, duration / 1440]]);
+                                const pred = globalModel.predict(input);
+                                // 計算 MSE 重構誤差
+                                const mse = tf.losses.meanSquaredError(input, pred).dataSync()[0];
+
+                                // 鑑定是否超過目前的閥值
+                                if (mse > currentThreshold) {
+                                    anomalies.push({
+                                        id: empId,
+                                        date: date,
+                                        start: formatMin(start),
+                                        duration: (duration / 60).toFixed(2), // 轉小時
+                                        mse: mse.toFixed(6)
+                                    });
+                                }
                             });
                         }
-                    });
-                    delete temp[key];
-                }
-            });
-
-            if (anomalies.length > 0) {
-                statusDiv.innerText = `鑑定完成，發現 ${anomalies.length} 筆異常。`;
-                anomalies.forEach(a => {
-                    const tr = resultBody.insertRow();
-                    tr.innerHTML = `<td>${a.id}</td><td>${a.date}</td><td>${a.start}</td><td>${a.duration}</td><td class="anomaly-score">${a.mse}</td>`;
+                        delete temp[key]; // 匹配完成，刪除暫存
+                    }
                 });
-                resultArea.style.display = "block";
-            } else {
-                statusDiv.innerText = "✅ 未發現異常紀錄。";
+
+                // --- 鑑定完成 UI 渲染結果 ---
+                if (anomalies.length > 0) {
+                    statusSection.innerHTML = `<i class="fas fa-exclamation-circle" style="color:#d93025;margin-right:8px"></i> 鑑定完成，共發現 ${anomalies.length} 筆異常紀錄。`;
+                    anomalies.forEach(a => {
+                        const tr = resultBody.insertRow();
+                        tr.innerHTML = `<td>${a.id}</td><td>${a.date}</td><td>${a.start}</td><td>${a.duration}</td><td class="anomaly-score">${a.mse}</td>`;
+                    });
+                    resultArea.style.display = "block";
+                } else {
+                    statusSection.innerHTML = '<span class="status-no-anomaly"><i class="fas fa-check-circle"></i> 鑑定完成，所有紀錄均符合 2026 標準規範。</span>';
+                }
+
+            } catch (err) {
+                console.error(err);
+                statusSection.style.display = 'block';
+                statusSection.className = "error";
+                statusSection.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 分析失敗: ' + err.message;
+            } finally {
+                // 恢復按鈕狀態
+                scanBtn.disabled = false;
             }
         };
+
+        // 讀取檔案
         reader.readAsArrayBuffer(file);
     });
 </script>

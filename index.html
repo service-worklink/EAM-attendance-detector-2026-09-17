@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 出勤異常偵測系統 (Excel 版)</title>
+    <title>AI 出勤異常偵測系統 (Excel版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
@@ -33,106 +33,11 @@
 
     <div class="card">
         <h3>1. 準備 AI 模型</h3>
-        <p>點擊下方按鈕載入標準規範模型。</p>
+        <p>點擊下方按鈕載入標準規範模型（工作時間為 09 - 17 時）。</p>
         <button id="loadModelBtn">載入標準模型 (JSON)</button>
         <div id="modelStatus"></div>
     </div>
 
     <div class="card">
         <h3>2. 上傳待鑑定資料</h3>
-        <p>請選擇要分析的 2026 年出勤紀錄 <strong>Excel (.xlsx)</strong> 檔案。</p>
-        <input type="file" id="excelFile" accept=".xlsx, .xls" disabled>
-        <button id="scanBtn" disabled>開始鑑定異常紀錄</button>
-    </div>
-
-    <div id="status"></div>
-    <div id="resultArea" style="display: none;">
-        <h3>🚨 偵測到的異常清單</h3>
-        <table id="resultTable">
-            <thead>
-                <tr>
-                    <th>員工編號</th>
-                    <th>日期</th>
-                    <th>上班時刻</th>
-                    <th>總工時 (小時)</th>
-                    <th>異常分數 (MSE)</th>
-                </tr>
-            </thead>
-            <tbody id="resultBody"></tbody>
-        </table>
-    </div>
-</div>
-
-<script>
-    let globalModel = null;
-    const THRESHOLD = 0.005; 
-
-    function timeToMinutes(timeStr) {
-        if (!timeStr) return 0;
-        // 處理 Excel 可能讀取到的數字格式或字串格式
-        if (typeof timeStr === 'string') {
-            const [h, m] = timeStr.split(':').map(Number);
-            return h * 60 + m;
-        }
-        return 0; 
-    }
-
-    function formatMin(m) {
-        return `${Math.floor(m/60).toString().padStart(2,'0')}:${(m%60).toString().padStart(2,'0')}`;
-    }
-
-    // 1. 載入模型邏輯
-    document.getElementById('loadModelBtn').addEventListener('click', async () => {
-        const btn = document.getElementById('loadModelBtn');
-        const statusDiv = document.getElementById('modelStatus');
-        
-        try {
-            btn.disabled = true;
-            statusDiv.innerText = "⏳ 正在從伺服器抓取模型檔案...";
-
-            const [configRes, weightsRes] = await Promise.all([
-                fetch('./model_config.json'),
-                fetch('./model_weights.json')
-            ]);
-
-            if (!configRes.ok || !weightsRes.ok) throw new Error("找不到模型檔案。");
-
-            const config = await configRes.json();
-            const weightsData = await weightsRes.json();
-
-            globalModel = await tf.models.modelFromJSON(config);
-
-            const weightTensors = weightsData.map(w => {
-                const typedData = new Float32Array(w.data); 
-                return tf.tensor(typedData, w.shape);
-            });
-
-            globalModel.setWeights(weightTensors);
-
-            statusDiv.className = "success";
-            statusDiv.innerText = "✅ 模型載入成功！現在可以上傳 Excel 進行鑑定。";
-            document.getElementById('excelFile').disabled = false;
-        } catch (err) {
-            console.error(err);
-            statusDiv.className = "error";
-            statusDiv.innerText = "❌ 載入失敗: " + err.message;
-            btn.disabled = false;
-        }
-    });
-
-    // 2. 監聽檔案選擇
-    document.getElementById('excelFile').addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            document.getElementById('scanBtn').disabled = false;
-        }
-    });
-
-    // 3. 鑑定邏輯 (改為讀取 Excel)
-    document.getElementById('scanBtn').addEventListener('click', () => {
-        const file = document.getElementById('excelFile').files[0];
-        const statusDiv = document.getElementById('status');
-        const resultArea = document.getElementById('resultArea');
-        const resultBody = document.getElementById('resultBody');
-
-        statusDiv.className = "success";
-        statusDiv.innerText = "⏳
+        <p>請選擇要分析的 2026 年出勤紀錄 <strong>Excel (.xlsx)</strong>

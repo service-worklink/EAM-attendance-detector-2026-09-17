@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 出勤異常偵測系統 (Excel版)</title>
+    <title>AI 出勤異常偵測系統 (含靈敏度調整)</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
@@ -12,6 +12,10 @@
         h1 { text-align: center; color: #1a73e8; margin-bottom: 30px; }
         .card { border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
         .card h3 { margin-top: 0; color: #333; }
+        .setting-group { background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0; border-left: 4px solid #1a73e8; }
+        label { font-weight: bold; display: block; margin-bottom: 5px; }
+        input[type="range"] { width: 100%; cursor: pointer; }
+        .threshold-value { color: #d93025; font-weight: bold; font-size: 1.1em; }
         button { background-color: #1a73e8; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 15px; transition: background 0.3s; }
         button:hover { background-color: #1557b0; }
         button:disabled { background-color: #ccc; cursor: not-allowed; }
@@ -22,7 +26,6 @@
         table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
         th, td { border: 1px solid #eee; padding: 12px; text-align: left; }
         th { background-color: #f8f9fa; font-weight: 600; }
-        tr:hover { background-color: #fdfdfd; }
         .anomaly-score { color: #d93025; font-weight: bold; }
     </style>
 </head>
@@ -33,14 +36,23 @@
 
     <div class="card">
         <h3>1. 準備 AI 模型</h3>
-        <p>點擊下方按鈕載入標準規範模型（工作時間為 09 - 17 時）。</p>
         <button id="loadModelBtn">載入標準模型 (JSON)</button>
         <div id="modelStatus"></div>
     </div>
 
     <div class="card">
-        <h3>2. 上傳待鑑定資料</h3>
-        <p>請選擇要分析出勤紀錄 <strong>Excel (.xlsx)</strong> 檔案。</p>
+        <h3>2. 設定判定靈敏度</h3>
+        <div class="setting-group">
+            <label for="thresholdRange">判定閥值 (MSE): <span id="thresholdDisplay" class="threshold-value">0.0050</span></label>
+            <input type="range" id="thresholdRange" min="0.0001" max="0.02" step="0.0001" value="0.0050">
+            <p style="font-size: 0.85em; color: #666; margin-top: 8px;">
+                💡 數值越小越<strong>靈敏</strong>（抓出更多微小異常）；數值越大越<strong>寬鬆</strong>（只抓極端異常）。
+            </p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>3. 上傳待鑑定資料</h3>
         <input type="file" id="xlsxFile" accept=".xlsx, .xls" disabled>
         <button id="scanBtn" disabled>開始鑑定異常紀錄</button>
     </div>
@@ -65,70 +77,57 @@
 
 <script>
     let globalModel = null;
-    const THRESHOLD = 0.005; // 異常門檻值
+    let currentThreshold = 0.0050;
 
-    // 工具：時間轉分鐘
+    // 更新顯示的閥值數值
+    document.getElementById('thresholdRange').addEventListener('input', (e) => {
+        currentThreshold = parseFloat(e.target.value);
+        document.getElementById('thresholdDisplay').innerText = currentThreshold.toFixed(4);
+    });
+
     function timeToMinutes(timeStr) {
         if (!timeStr) return 0;
-        // 確保 timeStr 是字串且包含冒號
         const str = String(timeStr);
         if (!str.includes(':')) return 0;
         const [h, m] = str.split(':').map(Number);
         return h * 60 + m;
     }
 
-    // 工具：分鐘轉時間格式
     function formatMin(m) {
         return `${Math.floor(m/60).toString().padStart(2,'0')}:${(m%60).toString().padStart(2,'0')}`;
     }
 
-    // 1. 載入模型邏輯
+    // 載入模型
     document.getElementById('loadModelBtn').addEventListener('click', async () => {
         const btn = document.getElementById('loadModelBtn');
         const statusDiv = document.getElementById('modelStatus');
-        
         try {
             btn.disabled = true;
-            statusDiv.innerText = "⏳ 正在從伺服器抓取模型檔案...";
-
+            statusDiv.innerText = "⏳ 載入中...";
             const [configRes, weightsRes] = await Promise.all([
                 fetch('./model_config.json'),
                 fetch('./model_weights.json')
             ]);
-
-            if (!configRes.ok || !weightsRes.ok) throw new Error("找不到模型檔案，請確認檔案已上傳至 GitHub。");
-
             const config = await configRes.json();
             const weightsData = await weightsRes.json();
-
             globalModel = await tf.models.modelFromJSON(config);
-
-            const weightTensors = weightsData.map(w => {
-                const typedData = new Float32Array(w.data); 
-                return tf.tensor(typedData, w.shape);
-            });
-
+            const weightTensors = weightsData.map(w => tf.tensor(new Float32Array(w.data), w.shape));
             globalModel.setWeights(weightTensors);
-
             statusDiv.className = "success";
-            statusDiv.innerText = "✅ 模型載入成功！現在可以上傳 Excel 進行鑑定。";
+            statusDiv.innerText = "✅ 模型載入成功！";
             document.getElementById('xlsxFile').disabled = false;
         } catch (err) {
-            console.error(err);
             statusDiv.className = "error";
-            statusDiv.innerText = "❌ 載入失敗: " + err.message;
+            statusDiv.innerText = "❌ 失敗: " + err.message;
             btn.disabled = false;
         }
     });
 
-    // 2. 監聽檔案選擇
     document.getElementById('xlsxFile').addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            document.getElementById('scanBtn').disabled = false;
-        }
+        if (e.target.files.length > 0) document.getElementById('scanBtn').disabled = false;
     });
 
-    // 3. 鑑定邏輯 (修改為 Excel 讀取)
+    // 執行鑑定
     document.getElementById('scanBtn').addEventListener('click', () => {
         const file = document.getElementById('xlsxFile').files[0];
         const statusDiv = document.getElementById('status');
@@ -136,23 +135,15 @@
         const resultBody = document.getElementById('resultBody');
 
         statusDiv.className = "success";
-        statusDiv.innerText = "⏳ AI 正在讀取並比對資料中...";
+        statusDiv.innerText = "⏳ 鑑定中...";
         resultBody.innerHTML = "";
         resultArea.style.display = "none";
 
         const reader = new FileReader();
-
         reader.onload = (e) => {
             const data = new Uint8Array(e.target.result);
             const workbook = XLSX.read(data, {type: 'array'});
-            
-            // 讀取第一個工作表
-            const sheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[sheetName];
-            
-            // 轉為 JSON 格式
-            const jsonData = XLSX.utils.sheet_to_json(worksheet);
-
+            const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
             const anomalies = [];
             const temp = {};
 
@@ -163,7 +154,6 @@
                 const flag = row['上下班標記'];
 
                 if (!empId || !date || !time) return;
-
                 const key = `${empId}_${date}`;
                 if (flag === 'I') {
                     temp[key] = timeToMinutes(time);
@@ -176,11 +166,10 @@
                         const pred = globalModel.predict(input);
                         const mse = tf.losses.meanSquaredError(input, pred).dataSync()[0];
 
-                        if (mse > THRESHOLD) {
+                        // 使用動態調整的閥值
+                        if (mse > currentThreshold) {
                             anomalies.push({
-                                id: empId,
-                                date: date,
-                                start: formatMin(start),
+                                id: empId, date, start: formatMin(start),
                                 duration: (duration / 60).toFixed(2),
                                 mse: mse.toFixed(6)
                             });
@@ -190,19 +179,17 @@
                 }
             });
 
-            // 渲染結果
             if (anomalies.length > 0) {
-                statusDiv.innerText = `鑑定完成，共發現 ${anomalies.length} 筆異常紀錄。`;
+                statusDiv.innerText = `鑑定完成，發現 ${anomalies.length} 筆異常。`;
                 anomalies.forEach(a => {
                     const tr = resultBody.insertRow();
                     tr.innerHTML = `<td>${a.id}</td><td>${a.date}</td><td>${a.start}</td><td>${a.duration}</td><td class="anomaly-score">${a.mse}</td>`;
                 });
                 resultArea.style.display = "block";
             } else {
-                statusDiv.innerText = "✅ 鑑定完成，所有紀錄均符合 2026 標準規範。";
+                statusDiv.innerText = "✅ 未發現異常紀錄。";
             }
         };
-
         reader.readAsArrayBuffer(file);
     });
 </script>

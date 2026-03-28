@@ -316,105 +316,124 @@
     }
 
     // 4. 偵測鑑定邏輯 (讀取 Excel) 保持原本邏輯，只增加 UI 更新
-    scanBtn.addEventListener('click', () => {
-        const file = fileInput.files[0];
+// 執行鑑定
+scanBtn.addEventListener('click', () => {
+    const file = fileInput.files[0];
 
-        // UI 初始化
-        scanBtn.disabled = true; // 防止重複點擊
-        statusSection.style.display = 'block';
-        statusSection.innerHTML = '<span class="status-loading"><i class="fas fa-spinner fa-spin"></i> AI 正在分析鑑定資料中...</span>';
-        resultBody.innerHTML = "";
-        resultArea.style.display = "none";
+    // UI 初始化
+    scanBtn.disabled = true;
+    statusSection.style.display = 'block';
+    statusSection.innerHTML = '<span class="status-loading"><i class="fas fa-spinner fa-spin"></i> AI 正在分析鑑定資料中...</span>';
+    resultBody.innerHTML = "";
+    resultArea.style.display = "none";
 
-        const reader = new FileReader();
+    const reader = new FileReader();
 
-        reader.onload = (e) => {
-            try {
-                const data = new Uint8Array(e.target.result);
-                // 增加 { cellDates: true } 可以更準確讀取 Excel 時間格式
-                const workbook = XLSX.read(data, {type: 'array'});
-                
-                // 讀取第一個工作表
-                const sheetName = workbook.SheetNames[0];
-                const worksheet = workbook.Sheets[sheetName];
-                
-                // 轉為 JSON 格式 (與原本邏輯保持一致)
-                // 注意：根據不同的 Excel 存檔方式，日期與時間有時會是字串，有時會是數字或 Date 物件。
-                // 這裡我們假設與原本 CSV 一致的欄位名稱與格式。
-                const jsonData = XLSX.utils.sheet_to_json(worksheet);
+    reader.onload = (e) => {
+        try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, {type: 'array'});
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
 
-                if (jsonData.length === 0) throw new Error("Excel 檔案內容為空。");
+            // === 1. 檢查檔案是否為空 ===
+            if (jsonData.length === 0) {
+                throw new Error("Excel 檔案內容為空，請檢查工作表是否有資料。");
+            }
 
-                const anomalies = [];
-                const temp = {};
+            // === 2. 檢查必要欄位名稱是否存在 ===
+            const requiredFields = ['員工編號', '上下班日期', '上下班時間', '上下班標記'];
+            const firstRow = jsonData[0];
+            const missingFields = requiredFields.filter(field => !(field in firstRow));
 
-                jsonData.forEach(row => {
-                    const empId = row['員工編號'];
-                    const date = row['上下班日期'];
-                    const time = row['上下班時間'];
-                    const flag = row['上下班標記'];
+            if (missingFields.length > 0) {
+                throw new Error(`檔案格式錯誤！缺少以下欄位：${missingFields.join(', ')}`);
+            }
 
-                    if (!empId || !date || !time) return;
+            const anomalies = [];
+            const temp = {};
+            let validRowCount = 0;
 
-                    const key = `${empId}_${date}`;
-                    if (flag === 'I') {
-                        temp[key] = timeToMinutes(time);
-                    } else if (flag === 'O' && temp[key]) {
-                        const start = temp[key];
-                        // 注意：這裡假設上下班日期在同一天。如果是跨日打卡，工時計算需要更複雜。
-                        const duration = timeToMinutes(time) - start;
+            jsonData.forEach((row, index) => {
+                const empId = row['員工編號'];
+                const date = row['上下班日期'];
+                const time = row['上下班時間'];
+                const flag = row['上下班標記'];
 
-                        // 防止無效工時 (例如打卡標記錯誤導致下班在上班前)
-                        if (duration > 0) {
-                            tf.tidy(() => {
-                                // 正規化輸入特徵 [上班時刻/1440, 工時/1440]
-                                const input = tf.tensor2d([[start / 1440, duration / 1440]]);
-                                const pred = globalModel.predict(input);
-                                // 計算 MSE 重構誤差
-                                const mse = tf.losses.meanSquaredError(input, pred).dataSync()[0];
+                // === 3. 檢查單列內容完整性 ===
+                if (!empId || !date || !time || !flag) return;
 
-                                // 鑑定是否超過目前的閥值
-                                if (mse > currentThreshold) {
-                                    anomalies.push({
-                                        id: empId,
-                                        date: date,
-                                        start: formatMin(start),
-                                        duration: (duration / 60).toFixed(2), // 轉小時
-                                        mse: mse.toFixed(6)
-                                    });
-                                }
-                            });
-                        }
-                        delete temp[key]; // 匹配完成，刪除暫存
-                    }
-                });
-
-                // --- 鑑定完成 UI 渲染結果 ---
-                if (anomalies.length > 0) {
-                    statusSection.innerHTML = `<i class="fas fa-exclamation-circle" style="color:#d93025;margin-right:8px"></i> 鑑定完成，共發現 ${anomalies.length} 筆異常紀錄。`;
-                    anomalies.forEach(a => {
-                        const tr = resultBody.insertRow();
-                        tr.innerHTML = `<td>${a.id}</td><td>${a.date}</td><td>${a.start}</td><td>${a.duration}</td><td class="anomaly-score">${a.mse}</td>`;
-                    });
-                    resultArea.style.display = "block";
-                } else {
-                    statusSection.innerHTML = '<span class="status-no-anomaly"><i class="fas fa-check-circle"></i> 鑑定完成，所有紀錄均符合 2026 標準規範。</span>';
+                // === 4. 檢查時間格式是否正確 (必須包含 :) ===
+                if (!String(time).includes(':')) {
+                    console.warn(`第 ${index + 2} 列時間格式錯誤: ${time}`);
+                    return;
                 }
 
-            } catch (err) {
-                console.error(err);
-                statusSection.style.display = 'block';
-                statusSection.className = "error";
-                statusSection.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 分析失敗: ' + err.message;
-            } finally {
-                // 恢復按鈕狀態
-                scanBtn.disabled = false;
-            }
-        };
+                // === 5. 檢查標記是否為 I 或 O ===
+                if (flag !== 'I' && flag !== 'O') {
+                    console.warn(`第 ${index + 2} 列標記錯誤 (應為 I 或 O): ${flag}`);
+                    return;
+                }
 
-        // 讀取檔案
-        reader.readAsArrayBuffer(file);
-    });
+                validRowCount++;
+
+                const key = `${empId}_${date}`;
+                if (flag === 'I') {
+                    temp[key] = timeToMinutes(time);
+                } else if (flag === 'O' && temp[key]) {
+                    const start = temp[key];
+                    const duration = timeToMinutes(time) - start;
+
+                    if (duration > 0) {
+                        tf.tidy(() => {
+                            const input = tf.tensor2d([[start / 1440, duration / 1440]]);
+                            const pred = globalModel.predict(input);
+                            const mse = tf.losses.meanSquaredError(input, pred).dataSync()[0];
+
+                            if (mse > currentThreshold) {
+                                anomalies.push({
+                                    id: empId,
+                                    date: date,
+                                    start: formatMin(start),
+                                    duration: (duration / 60).toFixed(2),
+                                    mse: mse.toFixed(6)
+                                });
+                            }
+                        });
+                    }
+                    delete temp[key];
+                }
+            });
+
+            // === 6. 檢查是否有成功處理任何配對 ===
+            if (validRowCount === 0) {
+                throw new Error("未能從檔案中讀取到任何有效的打卡紀錄，請檢查內容格式。");
+            }
+
+            // 渲染結果
+            if (anomalies.length > 0) {
+                statusSection.innerHTML = `<i class="fas fa-exclamation-circle" style="color:#d93025;margin-right:8px"></i> 鑑定完成，共分析 ${validRowCount} 筆動作，發現 ${anomalies.length} 筆異常紀錄。`;
+                anomalies.forEach(a => {
+                    const tr = resultBody.insertRow();
+                    tr.innerHTML = `<td>${a.id}</td><td>${a.date}</td><td>${a.start}</td><td>${a.duration}</td><td class="anomaly-score">${a.mse}</td>`;
+                });
+                resultArea.style.display = "block";
+            } else {
+                statusSection.innerHTML = `<span class="status-no-anomaly"><i class="fas fa-check-circle"></i> 鑑定完成（共分析 ${validRowCount} 筆動作），所有紀錄均符合標準規範。</span>`;
+            }
+
+        } catch (err) {
+            console.error(err);
+            statusSection.style.display = 'block';
+            statusSection.innerHTML = `<i class="fas fa-exclamation-triangle" style="color:#d93025;margin-right:8px"></i> <strong>錯誤：</strong>${err.message}`;
+        } finally {
+            scanBtn.disabled = false;
+        }
+    };
+
+    reader.readAsArrayBuffer(file);
+});
 </script>
 
 </body>

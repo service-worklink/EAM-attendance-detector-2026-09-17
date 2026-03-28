@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 出勤異常偵測系統</title>
+    <title>AI 出勤異常偵測系統 (Excel 版)</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.2/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; padding: 20px; line-height: 1.6; }
         .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
@@ -33,15 +33,15 @@
 
     <div class="card">
         <h3>1. 準備 AI 模型</h3>
-        <p>點擊下方按鈕載入標準規範模型（工作時間為 09 - 17 時）。</p>
+        <p>點擊下方按鈕載入標準規範模型。</p>
         <button id="loadModelBtn">載入標準模型 (JSON)</button>
         <div id="modelStatus"></div>
     </div>
 
     <div class="card">
         <h3>2. 上傳待鑑定資料</h3>
-        <p>請選擇要分析的 2026 年出勤紀錄 CSV 檔案。</p>
-        <input type="file" id="csvFile" accept=".csv" disabled>
+        <p>請選擇要分析的 2026 年出勤紀錄 <strong>Excel (.xlsx)</strong> 檔案。</p>
+        <input type="file" id="excelFile" accept=".xlsx, .xls" disabled>
         <button id="scanBtn" disabled>開始鑑定異常紀錄</button>
     </div>
 
@@ -65,16 +65,18 @@
 
 <script>
     let globalModel = null;
-    const THRESHOLD = 0.005; // 異常門檻值
+    const THRESHOLD = 0.005; 
 
-    // 工具：時間轉分鐘
     function timeToMinutes(timeStr) {
         if (!timeStr) return 0;
-        const [h, m] = timeStr.split(':').map(Number);
-        return h * 60 + m;
+        // 處理 Excel 可能讀取到的數字格式或字串格式
+        if (typeof timeStr === 'string') {
+            const [h, m] = timeStr.split(':').map(Number);
+            return h * 60 + m;
+        }
+        return 0; 
     }
 
-    // 工具：分鐘轉時間格式
     function formatMin(m) {
         return `${Math.floor(m/60).toString().padStart(2,'0')}:${(m%60).toString().padStart(2,'0')}`;
     }
@@ -88,33 +90,28 @@
             btn.disabled = true;
             statusDiv.innerText = "⏳ 正在從伺服器抓取模型檔案...";
 
-            // 抓取 Config 與 Weights
             const [configRes, weightsRes] = await Promise.all([
                 fetch('./model_config.json'),
                 fetch('./model_weights.json')
             ]);
 
-            if (!configRes.ok || !weightsRes.ok) throw new Error("找不到模型檔案，請確認檔案已上傳至 GitHub。");
+            if (!configRes.ok || !weightsRes.ok) throw new Error("找不到模型檔案。");
 
-// --- 修改後的權重載入邏輯 ---
-const config = await configRes.json();
-const weightsData = await weightsRes.json();
+            const config = await configRes.json();
+            const weightsData = await weightsRes.json();
 
-// 1. 重建結構
-globalModel = await tf.models.modelFromJSON(config);
+            globalModel = await tf.models.modelFromJSON(config);
 
-// 2. 修正：確保 data 是純數字陣列
-const weightTensors = weightsData.map(w => {
-    // 強制將 data 轉換為 Float32Array，這能解決大多數類型不匹配的問題
-    const typedData = new Float32Array(w.data); 
-    return tf.tensor(typedData, w.shape);
-});
+            const weightTensors = weightsData.map(w => {
+                const typedData = new Float32Array(w.data); 
+                return tf.tensor(typedData, w.shape);
+            });
 
-globalModel.setWeights(weightTensors);
+            globalModel.setWeights(weightTensors);
 
             statusDiv.className = "success";
-            statusDiv.innerText = "✅ 模型載入成功！現在可以上傳 CSV 進行鑑定。";
-            document.getElementById('csvFile').disabled = false;
+            statusDiv.innerText = "✅ 模型載入成功！現在可以上傳 Excel 進行鑑定。";
+            document.getElementById('excelFile').disabled = false;
         } catch (err) {
             console.error(err);
             statusDiv.className = "error";
@@ -124,81 +121,18 @@ globalModel.setWeights(weightTensors);
     });
 
     // 2. 監聽檔案選擇
-    document.getElementById('csvFile').addEventListener('change', (e) => {
+    document.getElementById('excelFile').addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
             document.getElementById('scanBtn').disabled = false;
         }
     });
 
-    // 3. 鑑定邏輯
+    // 3. 鑑定邏輯 (改為讀取 Excel)
     document.getElementById('scanBtn').addEventListener('click', () => {
-        const file = document.getElementById('csvFile').files[0];
+        const file = document.getElementById('excelFile').files[0];
         const statusDiv = document.getElementById('status');
         const resultArea = document.getElementById('resultArea');
         const resultBody = document.getElementById('resultBody');
 
         statusDiv.className = "success";
-        statusDiv.innerText = "⏳ AI 正在逐筆比對資料中...";
-        resultBody.innerHTML = "";
-        resultArea.style.display = "none";
-
-        const anomalies = [];
-        const temp = {};
-
-        Papa.parse(file, {
-            header: true,
-            skipEmptyLines: true,
-            complete: (results) => {
-                results.data.forEach(row => {
-                    const empId = row['員工編號'];
-                    const date = row['上下班日期'];
-                    const time = row['上下班時間'];
-                    const flag = row['上下班標記'];
-
-                    if (!empId || !date || !time) return;
-
-                    const key = `${empId}_${date}`;
-                    if (flag === 'I') {
-                        temp[key] = timeToMinutes(time);
-                    } else if (flag === 'O' && temp[key]) {
-                        const start = temp[key];
-                        const duration = timeToMinutes(time) - start;
-
-                        // 進行 AI 預測
-                        tf.tidy(() => {
-                            const input = tf.tensor2d([[start / 1440, duration / 1440]]);
-                            const pred = globalModel.predict(input);
-                            const mse = tf.losses.meanSquaredError(input, pred).dataSync()[0];
-
-                            if (mse > THRESHOLD) {
-                                anomalies.push({
-                                    id: empId,
-                                    date: date,
-                                    start: formatMin(start),
-                                    duration: (duration / 60).toFixed(2),
-                                    mse: mse.toFixed(6)
-                                });
-                            }
-                        });
-                        delete temp[key];
-                    }
-                });
-
-                // 渲染結果
-                if (anomalies.length > 0) {
-                    statusDiv.innerText = `鑑定完成，共發現 ${anomalies.length} 筆異常紀錄。`;
-                    anomalies.forEach(a => {
-                        const tr = resultBody.insertRow();
-                        tr.innerHTML = `<td>${a.id}</td><td>${a.date}</td><td>${a.start}</td><td>${a.duration}</td><td class="anomaly-score">${a.mse}</td>`;
-                    });
-                    resultArea.style.display = "block";
-                } else {
-                    statusDiv.innerText = "✅ 鑑定完成，所有紀錄均符合 2026 標準規範。";
-                }
-            }
-        });
-    });
-</script>
-
-</body>
-</html>
+        statusDiv.innerText = "⏳
